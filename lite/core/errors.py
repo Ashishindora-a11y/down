@@ -87,15 +87,32 @@ def deadline_exceeded(seconds: int) -> ApiError:
 
 # --- yt-dlp error translation --------------------------------------------
 
-# Ordered: first match wins.
+# Ordered: first match wins, so the specific bot-check and age-gate patterns
+# must precede the generic "sign in" catch-all below them.
+#
+# Match against text that has been punctuation-normalised by _normalise(): the
+# platform writes "you’re" with U+2019, and a pattern written with an ASCII
+# apostrophe silently fails on it. That exact mismatch used to misreport every
+# datacenter bot-check as "private or age-restricted", which points the
+# operator at the wrong fix entirely.
 _PATTERNS: tuple[tuple[str, int, str, str], ...] = (
     (
-        r"sign in to confirm (you'?re|your) (not a bot|age)|confirm your age|"
-        r"bot.?detect|captcha",
+        r"sign in to confirm (that )?(you'?re |you are )?not a bot|"
+        r"confirm (you'?re|you are) not a bot|suspected as a bot|"
+        r"bot.?detect|captcha|unusual traffic|automated queries",
         403,
         "blocked_by_platform",
         "The platform asked this server to prove it is not a bot. Datacenter IPs "
-        "(App Runner, Cloud Run, EC2) are challenged far more often than home IPs.",
+        "(Render, Cloud Run, EC2) are challenged far more often than home IPs. "
+        "Try IMPERSONATE=chrome first, then COOKIES_B64, then a residential PROXY.",
+    ),
+    (
+        r"sign in to confirm your age|confirm your age|age.?restricted|age.?gated|"
+        r"inappropriate for some users|may be inappropriate",
+        403,
+        "age_restricted",
+        "Age-gated media requires a signed-in session. Set COOKIES_B64 to the base64 "
+        "of a Netscape cookies.txt exported from an account that can view it.",
     ),
     (
         r"login required|requested format is not available.*login|this video is private|"
@@ -103,12 +120,32 @@ _PATTERNS: tuple[tuple[str, int, str, str], ...] = (
         r"requires authentication|restricted video",
         403,
         "auth_required",
-        "Supply cookies for an account that can view this media via the COOKIES_B64 "
-        "env var (base64 of a Netscape cookies.txt).",
+        "Either the media really is private, or the platform is withholding it from "
+        "this server's IP. If the link plays in your own browser while logged out, "
+        "treat it as a block: try IMPERSONATE=chrome, then COOKIES_B64.",
+    ),
+    # Tooling failures come before the content categories below. "ffmpeg not
+    # found" would otherwise be caught by the media_unavailable pattern and
+    # reported as a missing video, hiding a server misconfiguration.
+    (
+        r"ffmpeg|ffprobe",
+        500,
+        "ffmpeg_missing",
+        "This conversion needs ffmpeg in the container. The provided Dockerfile "
+        "installs it; a bare `pip install` host will not have it.",
+    ),
+    # Also ahead of media_unavailable: a takedown usually reads "no longer
+    # available due to a copyright claim", and the reason is the useful part.
+    (
+        r"copyright|dmca|blocked it on copyright grounds",
+        451,
+        "legally_blocked",
+        None,
     ),
     (
-        r"not available in your country|geo restricted|geo-restricted|"
-        r"blocked it in your country|not available from your location",
+        r"available in your country|geo.?restricted|geo.?block|"
+        r"blocked it in your country|not available from your location|"
+        r"available in your location|not available in your region",
         451,
         "geo_blocked",
         "Route the request through a proxy in a permitted region using the PROXY env var.",
@@ -121,11 +158,11 @@ _PATTERNS: tuple[tuple[str, int, str, str], ...] = (
         "set PROXY.",
     ),
     (
-        r"video unavailable|removed by the uploader|no longer available|"
-        r"has been terminated|does not exist|not found|http error 404|deleted",
-        404,
-        "media_unavailable",
-        None,
+        r"requested format is not available|no video formats found|"
+        r"no formats found",
+        422,
+        "no_suitable_format",
+        "Relax the request: lower 'quality', or try mode=audio.",
     ),
     (
         r"unsupported url|no video could be found|unable to extract|"
@@ -135,41 +172,56 @@ _PATTERNS: tuple[tuple[str, int, str, str], ...] = (
         "yt-dlp has no extractor for this link, or the page holds no media.",
     ),
     (
-        r"requested format is not available|no video formats found|"
-        r"no formats found",
-        422,
-        "no_suitable_format",
-        "Relax the request: lower 'quality', or try mode=audio.",
-    ),
-    (
         r"timed out|timeout|connection reset|connection aborted|"
         r"temporary failure in name resolution|network is unreachable",
         504,
         "upstream_timeout",
         "The media host was slow or unreachable. Retry.",
     ),
+    # Last of the specific categories, and deliberately so: its phrases are
+    # broad enough to swallow the ones above if it ran first. "not found" is
+    # qualified for the same reason.
     (
-        r"ffmpeg|ffprobe",
-        500,
-        "ffmpeg_missing",
-        "This conversion needs ffmpeg in the container. The provided Dockerfile "
-        "installs it; a bare `pip install` host will not have it.",
-    ),
-    (
-        r"copyright|dmca",
-        451,
-        "legally_blocked",
+        r"video unavailable|removed by the uploader|no longer available|"
+        r"has been terminated|does not exist|video not found|media not found|"
+        r"http error 404|has been deleted|was deleted|account.*not exist",
+        404,
+        "media_unavailable",
         None,
     ),
 )
 
 
+_SMART_PUNCTUATION = {
+    "\u2018": "'",  # left single quote
+    "\u2019": "'",  # right single quote - YouTube's "you’re not a bot"
+    "\u02bc": "'",  # modifier letter apostrophe
+    "\u201c": '"',
+    "\u201d": '"',
+    "\u2013": "-",  # en dash
+    "\u2014": "-",  # em dash
+    "\u00a0": " ",  # non-breaking space
+}
+
+
+def _normalise(message: str) -> str:
+    """Strip ANSI codes, the ERROR: prefix, and typographic punctuation.
+
+    Platforms write user-facing prose with smart quotes and dashes. Matching
+    them with ASCII patterns fails in ways that are invisible on screen, so
+    normalise before any regex touches the text.
+    """
+    cleaned = re.sub(r"\x1b\[[0-9;]*m", "", message)
+    cleaned = re.sub(r"^ERROR:\s*", "", cleaned).strip()
+    for fancy, plain in _SMART_PUNCTUATION.items():
+        cleaned = cleaned.replace(fancy, plain)
+    return cleaned
+
+
 def from_ytdlp(exc: BaseException) -> ApiError:
     """Translate a yt-dlp exception into an ApiError with an actionable hint."""
     raw = str(exc) or exc.__class__.__name__
-    # yt-dlp prefixes messages with "ERROR: " and ANSI colour codes.
-    cleaned = re.sub(r"\x1b\[[0-9;]*m", "", raw)
-    cleaned = re.sub(r"^ERROR:\s*", "", cleaned).strip()
+    cleaned = _normalise(raw)
     lowered = cleaned.lower()
 
     for pattern, status, code, hint in _PATTERNS:

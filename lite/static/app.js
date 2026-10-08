@@ -39,9 +39,15 @@
 
   // --- helpers ------------------------------------------------------------
 
-  function setStatus(text, kind) {
+  function setStatus(text, kind, detail) {
     statusEl.className = "status" + (kind ? " " + kind : "");
     statusEl.textContent = text || "";
+    if (detail) {
+      var small = document.createElement("span");
+      small.className = "status-detail";
+      small.textContent = detail;
+      statusEl.appendChild(small);
+    }
   }
 
   function busy(on) {
@@ -115,13 +121,19 @@
       case "limit_exceeded":
         return detail.message;
       case "blocked_by_platform":
-        return "The platform blocked this server. Try again, or try a different link.";
+        return "The platform is blocking this server, not you. It wants proof the " +
+               "request is not automated.";
+      case "age_restricted":
+        return "This one is age-restricted and needs a signed-in session.";
       case "auth_required":
-        return "This one is private or age-restricted, so it cannot be fetched.";
+        return "The platform withheld this media. It is either private, or it is " +
+               "refusing this server.";
       case "geo_blocked":
         return "Not available in this server's region.";
       case "rate_limited":
         return "Too many requests. Wait " + (detail.retry_after || 30) + "s and retry.";
+      case "upstream_rate_limited":
+        return "The platform is throttling this server. Wait a minute and retry.";
       case "server_busy":
         return "Server is busy. Try again in a moment.";
       case "unsupported_url":
@@ -132,9 +144,29 @@
         return "Live streams are not supported.";
       case "deadline_exceeded":
         return "Took too long and was cancelled. Try a lower quality.";
+      case "ffmpeg_missing":
+        return "This file needs combining and the server cannot do it.";
+      case "resolver_mode":
+        return "This deployment cannot combine video and audio. Audio-only works.";
       default:
         return detail.message || "Could not fetch that link.";
     }
+  }
+
+  /**
+   * The platform's own words, shown under the friendly message.
+   *
+   * Worth the extra line: a rewritten message alone cost real debugging time
+   * when a bot-check was being reported as "private or age-restricted". Seeing
+   * what the platform actually said is what makes the difference diagnosable.
+   */
+  function detailFor(error) {
+    var detail = error.payload && error.payload.error;
+    if (!detail || !detail.message) return "";
+    var parts = [];
+    if (detail.code) parts.push(detail.code);
+    parts.push(detail.message);
+    return parts.join(": ");
   }
 
   // --- submit -------------------------------------------------------------
@@ -193,7 +225,7 @@
       // page can honestly say about it.
       setStatus("Download started. Large files take a few seconds to appear.", "ok");
     } catch (error) {
-      setStatus(messageFor(error), "err");
+      setStatus(messageFor(error), "err", detailFor(error));
     } finally {
       busy(false);
     }

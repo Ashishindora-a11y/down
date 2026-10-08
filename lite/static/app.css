@@ -213,6 +213,17 @@ button.busy .spinner {
 .status.err { color: var(--err); }
 .status.ok { color: var(--ok); }
 
+/* The platform's own message, under the friendly one. Small, but present:
+   hiding it turns a diagnosable failure into a guess. */
+.status-detail {
+  display: block;
+  margin-top: 0.4rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
 /* --- footer ------------------------------------------------------------ */
 
 footer {
