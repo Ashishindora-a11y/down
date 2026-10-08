@@ -1,0 +1,93 @@
+# Render Blueprint.
+#
+# This file must live at the REPOSITORY ROOT. Render looks for render.yaml here
+# by default, and the Docker paths below are resolved relative to the repo root
+# (per Render's Blueprint spec), not relative to any service directory. That is
+# why they are written as ./lite/... even though the app lives in lite/.
+#
+# Deploy: push this repo to GitHub, then in Render choose
+#   New +  ->  Blueprint  ->  select the repo
+#
+# Render is the strongest free host for this service: it builds from the
+# Dockerfile, so ffmpeg is present, and it puts no cap on response size. That
+# combination is what lets it serve YouTube (which needs muxing) and relay media
+# bytes, neither of which works on Vercel.
+#
+# Free-tier realities this file cannot change:
+#   * Spins down after 15 minutes idle. The next request pays a ~1 minute cold
+#     start, so the first download after a quiet spell feels broken but is not.
+#   * 5 GB egress per month since 2026-04-23 (it was 100 GB). Relaying media is
+#     bandwidth-heavy: roughly 500 clips at 10 MB and you are done. Prefer
+#     /api/v1/redirect, which spends none of it.
+#   * 750 instance-hours per workspace per month against a ~730-hour month, so
+#     one always-on service eats nearly the whole budget. Do not add a
+#     keep-alive pinger and expect to stay free.
+#   * 512 MB RAM, 0.1 CPU. ffmpeg muxing on a tenth of a core is slow.
+
+services:
+  - type: web
+    name: clipfetch
+    runtime: docker
+    plan: free
+    region: oregon            # also: ohio, virginia, frankfurt, singapore
+
+    # Both paths are relative to the repo root.
+    dockerfilePath: ./lite/Dockerfile
+    dockerContext: ./lite
+
+    healthCheckPath: /healthz
+
+    envVars:
+      # Render generates a strong random value on the first deploy and keeps it.
+      # Read it from the dashboard: your service -> Environment -> API_KEYS.
+      - key: API_KEYS
+        generateValue: true
+      - key: REQUIRE_API_KEY
+        value: "true"
+
+      - key: SERVICE_MODE
+        value: full
+      - key: ENABLE_SERVER_DOWNLOAD
+        value: "true"
+      - key: ENABLE_UI
+        value: "true"
+      - key: LOG_FORMAT
+        value: json
+
+      # Sized for 512 MB / 0.1 CPU. Raising these on the free plan trades
+      # throughput for a real chance of an out-of-memory kill.
+      - key: MAX_CONCURRENT
+        value: "2"
+      - key: WEB_CONCURRENCY
+        value: "1"
+      - key: THREADS
+        value: "4"
+
+      - key: MAX_DURATION_SEC
+        value: "300"
+      - key: MAX_FILESIZE_MB
+        value: "200"
+      - key: MAX_QUALITY
+        value: "1080"
+
+      # Render does not impose App Runner's 120s request ceiling, but a slow
+      # clip on 0.1 CPU still should not pin a worker indefinitely.
+      - key: SOFT_DEADLINE_SEC
+        value: "240"
+
+      - key: RATE_LIMIT_PER_MIN
+        value: "10"
+      - key: RATE_LIMIT_PER_DAY
+        value: "300"
+
+      - key: TMP_DIR
+        value: /tmp
+
+      # Uncomment if platforms start challenging Render's IP ranges. Set the
+      # values in the dashboard, not here: sync:false keeps them out of git.
+      # - key: IMPERSONATE
+      #   value: chrome
+      # - key: PROXY
+      #   sync: false
+      # - key: COOKIES_B64
+      #   sync: false

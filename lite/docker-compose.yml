@@ -1,0 +1,54 @@
+# Local development and pre-deploy smoke testing.
+# Production runs the same image on App Runner / Cloud Run / ECS.
+#
+#   docker compose up --build
+#   curl localhost:8080/healthz
+
+services:
+  clip-api:
+    build:
+      context: .
+      # Match the platform the managed hosts require, so a local pass means a
+      # remote pass too.
+      platforms:
+        - linux/amd64
+    image: clip-api-lite:local
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      LOG_LEVEL: INFO
+      LOG_FORMAT: text
+      ENABLE_UI: "true"
+      # Dev-only placeholder. Generate a real one for anything reachable:
+      #   python -c "import secrets; print(secrets.token_urlsafe(32))"
+      API_KEYS: dev-local-key
+      REQUIRE_API_KEY: "true"
+      CORS_ORIGINS: http://localhost:3000
+      MAX_DURATION_SEC: "300"
+      MAX_FILESIZE_MB: "250"
+      MAX_QUALITY: "1080"
+      SOFT_DEADLINE_SEC: "110"
+      MAX_CONCURRENT: "4"
+      TMP_DIR: /tmp
+      WEB_CONCURRENCY: "2"
+      THREADS: "8"
+    # tmpfs keeps the via=server scratch path off the container's writable
+    # layer, mirroring how Cloud Run behaves.
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    # Roughly a 1 vCPU / 2 GB App Runner instance.
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2G
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    security_opt:
+      - no-new-privileges:true

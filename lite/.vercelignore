@@ -1,0 +1,28 @@
+# Keep the function bundle small: Vercel caps Python functions at 500 MB
+# uncompressed, and a smaller bundle also means a faster cold start.
+.venv/
+venv/
+__pycache__/
+**/*.py[cod]
+
+# Container and other-host plumbing, irrelevant on Vercel.
+Dockerfile
+.dockerignore
+docker-compose.yml
+apprunner.yaml
+render.yaml
+deploy/
+
+# Tests and docs.
+smoke_test.py
+test_relay.py
+README.md
+DEPLOYER.md
+clients/
+
+# Never ship secrets.
+.env
+.env.*
+!.env.example
+cookies.txt
+*.cookies

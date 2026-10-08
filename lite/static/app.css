@@ -1,0 +1,233 @@
+/* Clipfetch - minimal download page.
+   One job: take a link and hand back a file. No metadata, no previews. */
+
+:root {
+  --bg: #0b0d10;
+  --panel: #14181d;
+  --line: #262c34;
+  --line-hi: #38414c;
+  --text: #eef2f6;
+  --muted: #8b96a3;
+  --accent: #5b9dff;
+  --accent-hi: #7db0ff;
+  --accent-ink: #06101c;
+  --err: #ff6b63;
+  --ok: #4ec97a;
+  --r: 12px;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f6f8fa;
+    --panel: #ffffff;
+    --line: #dfe4ea;
+    --line-hi: #c3ccd6;
+    --text: #141a21;
+    --muted: #5d6874;
+    --accent: #1f6feb;
+    --accent-hi: #1a5fd0;
+    --accent-ink: #ffffff;
+    --err: #c62f26;
+    --ok: #16794a;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+main {
+  width: 100%;
+  max-width: 34rem;
+}
+
+/* --- header ------------------------------------------------------------ */
+
+header { text-align: center; margin-bottom: 1.75rem; }
+
+h1 {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0 0 0.4rem;
+  font-size: 1.6rem;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
+.mark { width: 1.45rem; height: 1.45rem; color: var(--accent); flex: none; }
+
+header p { margin: 0; color: var(--muted); font-size: 0.95rem; }
+
+/* --- form -------------------------------------------------------------- */
+
+form { display: grid; gap: 0.85rem; }
+
+.key-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.key-row label { color: var(--muted); font-size: 0.85rem; white-space: nowrap; }
+
+.input-row { display: flex; gap: 0.6rem; }
+
+input[type="url"], input[type="password"], select {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  color: var(--text);
+  font: inherit;
+  padding: 0.85rem 1rem;
+  width: 100%;
+  min-width: 0;
+  transition: border-color 0.15s;
+}
+
+input[type="password"] { padding: 0.55rem 0.8rem; font-size: 0.9rem; }
+
+input::placeholder { color: var(--muted); }
+
+input:hover, select:hover { border-color: var(--line-hi); }
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+#url { flex: 1 1 auto; font-size: 1rem; }
+
+button[type="submit"] {
+  position: relative;
+  flex: none;
+  min-width: 8.5rem;
+  padding: 0.85rem 1.4rem;
+  border: 0;
+  border-radius: var(--r);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s;
+}
+
+button[type="submit"]:hover:not(:disabled) { background: var(--accent-hi); }
+button[type="submit"]:disabled { cursor: progress; opacity: 0.75; }
+
+/* Swap the label for a spinner while a request is in flight. */
+.spinner { display: none; }
+
+button.busy .label { visibility: hidden; }
+
+button.busy .spinner {
+  display: block;
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 1.05rem;
+  height: 1.05rem;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* --- options ----------------------------------------------------------- */
+
+.options {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+}
+
+.seg {
+  display: flex;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 3px;
+  flex: 1 1 auto;
+}
+
+.seg input { position: absolute; opacity: 0; pointer-events: none; }
+
+.seg label {
+  flex: 1;
+  text-align: center;
+  padding: 0.5rem 0.9rem;
+  border-radius: 9px;
+  font-size: 0.9rem;
+  font-weight: 550;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.seg input:checked + label { background: var(--accent); color: var(--accent-ink); }
+
+.seg input:focus-visible + label { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.options select {
+  flex: none;
+  width: auto;
+  padding: 0.55rem 0.7rem;
+  font-size: 0.9rem;
+}
+
+/* --- status ------------------------------------------------------------ */
+
+.status {
+  margin: 1.1rem 0 0;
+  min-height: 1.4em;
+  text-align: center;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.status.err { color: var(--err); }
+.status.ok { color: var(--ok); }
+
+/* --- footer ------------------------------------------------------------ */
+
+footer {
+  margin-top: 2.25rem;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+@media (max-width: 30rem) {
+  .input-row { flex-direction: column; }
+  button[type="submit"] { width: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+  button.busy .spinner { animation: none; border-right-color: currentColor; opacity: 0.5; }
+}

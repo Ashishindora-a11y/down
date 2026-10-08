@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# App data
+downloads/
+data/
+*.db
+*.sqlite3
+*.log
+tmp/
+.cache/
+
+# Secrets / local config
+.env
+.env.local
+cookies.txt
+*.cookies
+*.pem
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="color-scheme" content="dark light">
+  <title>Clipfetch</title>
+  <meta name="description" content="Paste a link, get the file.">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#11015;</text></svg>">
+</head>
+<body>
+  <main>
+    <header>
+      <h1>
+        <svg class="mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M12 3v11m0 0 4.5-4.5M12 14l-4.5-4.5M4.5 17.5v1A2.5 2.5 0 0 0 7 21h10a2.5 2.5 0 0 0 2.5-2.5v-1"
+                fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        Clipfetch
+      </h1>
+      <p>Paste a link, get the file.</p>
+    </header>
+
+    <form id="form" novalidate autocomplete="off">
+      {% if auth_required %}
+      <div class="key-row">
+        <label for="api-key">Access key</label>
+        <input type="password" id="api-key" spellcheck="false" autocomplete="current-password"
+               placeholder="Required" aria-describedby="key-help">
+        <span id="key-help" class="sr-only">Stored in this browser only.</span>
+      </div>
+      {% endif %}
+
+      <div class="input-row">
+        <input type="url" id="url" name="url" required inputmode="url" spellcheck="false"
+               placeholder="Paste a video or reel link" aria-label="Media link">
+        <button type="submit" id="go">
+          <span class="label">Download</span>
+          <span class="spinner" aria-hidden="true"></span>
+        </button>
+      </div>
+
+      <div class="options">
+        <div class="seg" role="radiogroup" aria-label="Format">
+          <input type="radio" name="mode" id="mode-video" value="video" checked>
+          <label for="mode-video">Video</label>
+          <input type="radio" name="mode" id="mode-audio" value="audio">
+          <label for="mode-audio">Audio</label>
+        </div>
+        <select id="quality" aria-label="Quality">
+          <option value="best" selected>Best</option>
+          <option value="1080">1080p</option>
+          <option value="720">720p</option>
+          <option value="480">480p</option>
+          <option value="360">360p</option>
+        </select>
+      </div>
+    </form>
+
+    <p id="status" class="status" role="status" aria-live="polite"></p>
+
+    <footer>
+      <span>Download only what you have the rights to.</span>
+    </footer>
+  </main>
+
+  <script id="cfg" type="application/json">{{ {
+    'maxQuality': limits.max_quality,
+    'maxDuration': limits.max_duration_sec,
+    'resolverOnly': resolver_only,
+    'authRequired': auth_required
+  }|tojson }}</script>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

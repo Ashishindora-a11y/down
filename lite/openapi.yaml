@@ -1,0 +1,512 @@
+openapi: 3.0.3
+
+info:
+  title: Clip Download API (Lite)
+  version: 1.0.0
+  description: >-
+    Resolves and downloads short videos and audio from YouTube (including
+    Shorts), Instagram (Reels and posts), TikTok, X, Facebook and the other
+    ~1800 sites yt-dlp supports.
+
+    Stateless by design: no database, no job queue, no persistent disk. Every
+    request is self-contained so the service can scale to zero on App Runner or
+    Cloud Run.
+
+    Pick the right endpoint. `/api/v1/url` returns the platform CDN URL and
+    moves no bytes, which avoids request-duration limits and egress cost
+    entirely; prefer it whenever the client can fetch the media itself.
+    `/api/v1/download` relays the bytes and is the fallback for CDNs that
+    require headers a browser cannot set, or when you need server-side audio
+    conversion.
+
+servers:
+  - url: https://your-service.awsapprunner.com
+    description: AWS App Runner
+  - url: https://your-service-xxxxx.run.app
+    description: Google Cloud Run
+  - url: http://localhost:8080
+    description: Local container
+
+security:
+  - ApiKeyHeader: []
+
+tags:
+  - name: Media
+    description: Resolve and download media.
+  - name: Service
+    description: Health and capability discovery.
+
+paths:
+  /healthz:
+    get:
+      tags: [Service]
+      summary: Liveness probe
+      description: Use this as the HTTP health check path on your platform.
+      security: []
+      responses:
+        "200":
+          description: Service is alive.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  version: { type: string, example: 1.0.0 }
+                  yt_dlp: { type: string, example: 2026.8.19 }
+                  ffmpeg: { type: boolean }
+                  uptime_sec: { type: number }
+
+  /readyz:
+    get:
+      tags: [Service]
+      summary: Readiness probe
+      security: []
+      responses:
+        "200": { description: Ready to serve. }
+        "503": { description: Misconfigured, for example auth required with no keys set. }
+
+  /api/v1/limits:
+    get:
+      tags: [Service]
+      summary: Service caps and capabilities
+      description: >-
+        Lets a client validate a request before spending a call, and reveals
+        whether ffmpeg is present (which determines audio conversion support).
+      security: []
+      responses:
+        "200":
+          description: Current limits.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Limits"
+
+  /api/v1/info:
+    post:
+      tags: [Media]
+      summary: Resolve metadata and available formats
+      description: >-
+        Reads metadata only; downloads nothing. Results are cached in-process
+        for CACHE_TTL_SEC, so a subsequent download of the same URL usually
+        skips re-extraction.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url:
+                  type: string
+                  format: uri
+                  example: https://youtube.com/shorts/qhSS6i9JG7c
+                formats:
+                  type: boolean
+                  default: true
+                  description: Set false to omit the (long) format list.
+      responses:
+        "200":
+          description: Metadata resolved.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MediaInfo" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+    get:
+      tags: [Media]
+      summary: Resolve metadata (query-string form)
+      parameters:
+        - { name: url, in: query, required: true, schema: { type: string, format: uri } }
+        - { name: formats, in: query, schema: { type: boolean, default: true } }
+      responses:
+        "200":
+          description: Metadata resolved.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MediaInfo" }
+
+  /api/v1/url:
+    post:
+      tags: [Media]
+      summary: Resolve the direct CDN URL (recommended)
+      description: >-
+        Returns the platform's own media URL plus any request headers needed to
+        fetch it. No bytes pass through this service.
+
+        Two caveats. These URLs expire, typically within minutes to hours. Many
+        are also bound to the IP that resolved them, so a URL resolved by this
+        server may be rejected when fetched from elsewhere; when that happens,
+        fall back to `/api/v1/download`.
+
+        When `delivery` is `split_streams` the platform has no combined file at
+        that quality and you must mux the two streams yourself, or call
+        `/api/v1/download?via=server` and let ffmpeg here do it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DownloadRequest" }
+      responses:
+        "200":
+          description: Direct URL resolved.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DirectUrlResponse" }
+        "413":
+          description: Media is longer than MAX_DURATION_SEC or larger than MAX_FILESIZE_MB.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+        "422": { $ref: "#/components/responses/Error" }
+    get:
+      tags: [Media]
+      summary: Resolve the direct CDN URL (query-string form)
+      parameters:
+        - { name: url, in: query, required: true, schema: { type: string, format: uri } }
+        - { name: mode, in: query, schema: { type: string, enum: [video, audio], default: video } }
+        - { name: quality, in: query, schema: { type: string, default: best } }
+      responses:
+        "200":
+          description: Direct URL resolved.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DirectUrlResponse" }
+
+  /api/v1/redirect:
+    get:
+      tags: [Media]
+      summary: 302 straight to the media on the platform CDN
+      description: >-
+        The cheapest delivery path: no bytes traverse this service, so
+        response-size caps and request timeouts never apply. Put this behind an
+        `<a download>` and the browser fetches from the platform directly.
+
+        Available in both service modes, and the primary download route in
+        resolver mode.
+
+        Two inherent limits. The CDN URL is often bound to the IP that resolved
+        it, so a client following this redirect may receive a 403 — fall back
+        to `/api/v1/download` when that happens. And media with no combined
+        video+audio format cannot be served this way at all, since muxing needs
+        ffmpeg; that is the normal case for YouTube video, which returns 422
+        here.
+      parameters:
+        - { name: url, in: query, required: true, schema: { type: string, format: uri } }
+        - { name: mode, in: query, schema: { type: string, enum: [video, audio], default: video } }
+        - { name: quality, in: query, schema: { type: string, default: best } }
+        - { name: key, in: query, schema: { type: string } }
+      responses:
+        "302":
+          description: Redirect to the media URL.
+          headers:
+            Location:
+              schema: { type: string }
+            X-Suggested-Filename:
+              schema: { type: string }
+              description: Percent-encoded filename derived from the title.
+            X-Media-Headers:
+              schema: { type: string }
+              description: >-
+                JSON object of headers the CDN may require, such as Referer. A
+                browser cannot set these; a server-side client can.
+        "422":
+          description: No single-file format exists, so a redirect cannot deliver it.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+
+  /api/v1/download:
+    get:
+      tags: [Media]
+      summary: Download the media through this service
+      description: >-
+        Returns the media bytes as an attachment. Supports HTTP Range, so
+        clients can resume.
+
+        `via=auto` (default) relays a single file when the platform has one and
+        falls back to server-side muxing when it does not. That fallback is the
+        normal path for YouTube.
+
+        `via=proxy` forces the relay path: bytes stream from the CDN without
+        ever touching disk, which keeps memory flat and matters on Cloud Run
+        where the filesystem is RAM-backed. It returns 422 when no single file
+        exists. `via=server` forces yt-dlp plus ffmpeg, needed for audio
+        conversion, container changes, and HLS/DASH sources.
+
+        Mind your platform's request cap: App Runner hard-stops any request at
+        120 seconds. Requests here are bounded by SOFT_DEADLINE_SEC (default
+        110s) and return 504 rather than being cut off mid-body.
+      parameters:
+        - { name: url, in: query, required: true, schema: { type: string, format: uri } }
+        - { name: mode, in: query, schema: { type: string, enum: [video, audio], default: video } }
+        - name: quality
+          in: query
+          description: Short side of the frame (360, 480, 720, 1080) or `best`. Clamped to MAX_QUALITY.
+          schema: { type: string, default: best }
+        - { name: via, in: query, schema: { type: string, enum: [proxy, server, auto], default: auto } }
+        - name: audio_format
+          in: query
+          description: Anything other than `original` needs ffmpeg and forces via=server.
+          schema: { type: string, enum: [original, mp3, m4a, opus, wav, flac], default: original }
+        - name: container
+          in: query
+          description: Anything other than `auto` needs ffmpeg and forces via=server.
+          schema: { type: string, enum: [auto, mp4, mkv, webm], default: auto }
+        - name: key
+          in: query
+          description: >-
+            API key alternative to the header, for browser links and <a download>
+            tags. It lands in access logs, so prefer the header server-to-server.
+          schema: { type: string }
+        - { name: Range, in: header, schema: { type: string }, description: Forwarded to the CDN. }
+      responses:
+        "200":
+          description: Media body.
+          headers:
+            Content-Disposition:
+              schema: { type: string }
+              description: Attachment with a filename derived from the title.
+            X-Download-Via:
+              schema: { type: string, enum: [proxy, server] }
+            X-Clip-Title:
+              schema: { type: string }
+              description: Percent-encoded, since HTTP headers cannot carry UTF-8.
+            X-Clip-Duration:
+              schema: { type: integer }
+            Accept-Ranges:
+              schema: { type: string, example: bytes }
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "206": { description: Partial content, in response to a Range request. }
+        "413":
+          description: Over the duration or size cap.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+        "422":
+          description: No suitable single-file format and server assembly unavailable.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+        "501":
+          description: >-
+            This deployment runs in resolver mode and does not transfer media.
+            Use /api/v1/url or /api/v1/redirect instead.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+        "503":
+          description: All concurrency slots busy. Honour Retry-After.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+        "504":
+          description: Exceeded SOFT_DEADLINE_SEC.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+    post:
+      tags: [Media]
+      summary: Download the media (JSON body form)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DownloadRequest" }
+      responses:
+        "200":
+          description: Media body.
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+
+components:
+  securitySchemes:
+    ApiKeyHeader:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: >-
+        One of the comma-separated values in the API_KEYS env var. A
+        `Authorization: Bearer <key>` header works too.
+
+  responses:
+    Error:
+      description: Request failed.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorBody" }
+
+  schemas:
+    ErrorBody:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable identifier; branch on this, not the message.
+              example: blocked_by_platform
+            message: { type: string }
+            hint:
+              type: string
+              description: Suggested remedy, when one exists.
+            retry_after:
+              type: integer
+              description: Seconds to wait, for 429 and 503.
+            request_id:
+              type: string
+              description: Matches X-Request-Id and the structured logs.
+
+    Limits:
+      type: object
+      properties:
+        max_duration_sec: { type: integer, example: 300 }
+        max_filesize_mb: { type: integer, example: 250 }
+        max_quality: { type: integer, example: 1080, description: "Cap on the short side of the frame, so 1080 means 1080p in portrait too." }
+        allow_live: { type: boolean }
+        max_concurrent: { type: integer }
+        rate_limit_per_min: { type: integer }
+        rate_limit_per_day: { type: integer }
+        soft_deadline_sec: { type: integer }
+        server_download_enabled: { type: boolean }
+        auth_required: { type: boolean }
+        service_mode:
+          type: string
+          enum: [full, resolver]
+          description: >-
+            'resolver' means /api/v1/download is disabled and media must be
+            fetched from the CDN via /api/v1/url or /api/v1/redirect. Check
+            this before choosing a download strategy.
+        ffmpeg: { type: boolean }
+        yt_dlp: { type: string }
+        modes:
+          type: array
+          items: { type: string }
+        audio_formats:
+          type: array
+          items: { type: string }
+
+    DownloadRequest:
+      type: object
+      required: [url]
+      properties:
+        url: { type: string, format: uri }
+        mode: { type: string, enum: [video, audio], default: video }
+        quality: { type: string, default: best }
+        via: { type: string, enum: [proxy, server, auto], default: auto }
+        audio_format: { type: string, enum: [original, mp3, m4a, opus, wav, flac], default: original }
+        container: { type: string, enum: [auto, mp4, mkv, webm], default: auto }
+
+    FormatSummary:
+      type: object
+      properties:
+        format_id: { type: string }
+        ext: { type: string }
+        kind: { type: string, enum: ["video+audio", "video-only", "audio-only"] }
+        quality:
+          type: integer
+          nullable: true
+          description: >-
+            Short side of the frame, which is what the `quality` request
+            parameter is compared against. A portrait 1080x1920 clip has
+            quality 1080, not 1920.
+        height: { type: integer, nullable: true, description: Raw frame height. }
+        width: { type: integer, nullable: true, description: Raw frame width. }
+        fps: { type: number, nullable: true }
+        vcodec: { type: string }
+        acodec: { type: string }
+        tbr_kbps: { type: number, nullable: true }
+        abr_kbps: { type: number, nullable: true }
+        filesize_bytes: { type: integer, nullable: true }
+        protocol: { type: string }
+        direct_downloadable:
+          type: boolean
+          description: False for HLS/DASH, which need ffmpeg to assemble.
+        note: { type: string, nullable: true }
+
+    MediaInfo:
+      type: object
+      properties:
+        id: { type: string }
+        title: { type: string }
+        description: { type: string, description: Truncated to 500 characters. }
+        duration_sec: { type: number, nullable: true }
+        duration_human: { type: string, nullable: true }
+        uploader: { type: string, nullable: true }
+        uploader_url: { type: string, nullable: true }
+        upload_date: { type: string, nullable: true, example: "20260104" }
+        thumbnail: { type: string, nullable: true }
+        webpage_url: { type: string }
+        extractor: { type: string, example: Youtube }
+        is_live: { type: boolean }
+        view_count: { type: integer, nullable: true }
+        like_count: { type: integer, nullable: true }
+        resolution: { type: string, nullable: true, example: 1080x1920 }
+        is_vertical: { type: boolean, nullable: true }
+        needs_muxing:
+          type: boolean
+          description: >-
+            True when no combined video+audio file exists, so the streams must
+            be muxed. Normally true for YouTube, which has largely retired
+            progressive formats, and means ffmpeg is required. The default
+            via=auto handles it for you.
+        within_limits:
+          type: boolean
+          description: False when the clip breaches a cap; limit_note explains why.
+        limit_note: { type: string, nullable: true }
+        available_qualities:
+          type: array
+          items: { type: integer }
+        downloadable_qualities:
+          type: array
+          items: { type: integer }
+          description: Subset of available_qualities within MAX_QUALITY.
+        formats:
+          type: array
+          items: { $ref: "#/components/schemas/FormatSummary" }
+        playlist:
+          type: object
+          nullable: true
+          description: Present when the link was a playlist or profile; only item one is resolved.
+
+    FileDescriptor:
+      type: object
+      properties:
+        url:
+          type: string
+          description: Short-lived CDN URL, often IP-locked to this server.
+        http_headers:
+          type: object
+          additionalProperties: { type: string }
+          description: Replay these when fetching the URL, or the CDN may refuse.
+        suggested_filename: { type: string }
+        format: { $ref: "#/components/schemas/FormatSummary" }
+
+    DirectUrlResponse:
+      type: object
+      properties:
+        media: { $ref: "#/components/schemas/MediaInfo" }
+        mode: { type: string }
+        delivery:
+          type: string
+          enum: [single_file, split_streams]
+        file:
+          allOf: [{ $ref: "#/components/schemas/FileDescriptor" }]
+          description: Present when delivery is single_file.
+        video:
+          allOf: [{ $ref: "#/components/schemas/FileDescriptor" }]
+          description: Present when delivery is split_streams.
+        audio:
+          allOf: [{ $ref: "#/components/schemas/FileDescriptor" }]
+          description: Present when delivery is split_streams.
+        note: { type: string, nullable: true }
+        expires: { type: string }

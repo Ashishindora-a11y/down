@@ -1,0 +1,77 @@
+# AWS App Runner - SOURCE-BASED build config.
+#
+# This file is only read when App Runner builds from a connected source repo.
+# If you deploy a container image (the recommended path, see
+# deploy/aws-apprunner.ps1), App Runner ignores this file and uses the
+# Dockerfile instead.
+#
+# Big trade-off of the source-based path: App Runner's managed Python runtime
+# has no ffmpeg and you cannot apt-install into it. That is a sharper
+# limitation than it sounds:
+#
+#   works        - /api/v1/info, /api/v1/url (both delivery modes),
+#                  /api/v1/download for platforms that serve a single combined
+#                  file (Instagram, TikTok, X, Facebook), and audio downloads
+#                  with audio_format=original
+#   DOES NOT WORK- YouTube video downloads, at any quality. YouTube has
+#                  largely retired combined video+audio formats, so its clips
+#                  arrive as separate streams that ffmpeg must mux. Verified
+#                  against a real Short: 29 video-only and 10 audio-only
+#                  formats, zero combined.
+#                - audio conversion (mp3, flac, ...)
+#                - HLS/DASH-only sources
+#
+# If YouTube matters to you, use the image-based deploy (deploy/aws-apprunner.ps1).
+# Its Dockerfile includes ffmpeg.
+
+version: 1.0
+runtime: python311
+
+build:
+  commands:
+    build:
+      - python -m pip install --upgrade pip
+      - pip install -r lite/requirements.txt
+
+run:
+  runtime-version: 3.11
+  command: >-
+    gunicorn
+    --chdir lite
+    --bind 0.0.0.0:8080
+    --workers 2
+    --worker-class gthread
+    --threads 8
+    --timeout 0
+    --graceful-timeout 30
+    --access-logfile -
+    --error-logfile -
+    wsgi:app
+  network:
+    port: 8080
+    env: PORT
+  env:
+    - name: ENABLE_SERVER_DOWNLOAD
+      value: "false"        # no ffmpeg in the managed runtime
+    - name: LOG_FORMAT
+      value: json
+    - name: ENABLE_UI
+      value: "true"
+    - name: REQUIRE_API_KEY
+      value: "true"
+    - name: MAX_DURATION_SEC
+      value: "300"
+    - name: MAX_FILESIZE_MB
+      value: "250"
+    - name: MAX_QUALITY
+      value: "1080"         # short side of the frame, so portrait clips are not capped out
+    - name: SOFT_DEADLINE_SEC
+      value: "110"          # App Runner hard-stops requests at 120s
+    - name: TMP_DIR
+      value: /tmp
+  secrets:
+    # Create the secret first, then reference its ARN here. Never inline a key.
+    #   aws secretsmanager create-secret --name clip-api/api-keys \
+    #     --secret-string "$(python -c 'import secrets;print(secrets.token_urlsafe(32))')"
+    - name: API_KEYS
+      value-from: "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:clip-api/api-keys"

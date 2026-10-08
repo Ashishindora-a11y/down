@@ -1,0 +1,13 @@
+# Pinned to the versions this was built and verified against.
+Flask==3.1.3
+gunicorn==23.0.0
+
+# curl-cffi gives yt-dlp browser-like TLS fingerprints via IMPERSONATE=chrome.
+# One of the few levers that helps against bot checks on datacenter IPs.
+curl-cffi==0.16.3
+
+# yt-dlp is the one dependency you must keep fresh. Platforms change their
+# players and extraction breaks, surfacing as `extraction_failed` (HTTP 502).
+# Rebuild monthly. The [default] extra pulls in brotli, mutagen, pycryptodomex,
+# websockets and certifi, which several extractors need.
+yt-dlp[default]==2026.8.19
